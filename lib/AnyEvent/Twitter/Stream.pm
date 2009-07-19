@@ -2,7 +2,7 @@ package AnyEvent::Twitter::Stream;
 
 use strict;
 use 5.008_001;
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 use AnyEvent;
 use AnyEvent::HTTP;
@@ -57,8 +57,11 @@ sub new {
                 });
                 my $reader; $reader = sub {
                     my($handle, $json) = @_;
-                    my $tweet = JSON::decode_json($json);
-                    $on_tweet->($tweet);
+                    # Twitter strem return "\x0a\x0d\x0a" if there's no matched tweets in ~30s.
+                    if ($json) {
+                        my $tweet = JSON::decode_json($json);
+                        $on_tweet->($tweet);
+                    }
                     $handle->push_read(line => $reader);
                 };
                 $handle->push_read(line => $reader);
