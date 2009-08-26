@@ -2,7 +2,7 @@ package AnyEvent::Twitter::Stream;
 
 use strict;
 use 5.008_001;
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 
 use AnyEvent;
 use AnyEvent::HTTP;
@@ -11,7 +11,7 @@ use JSON;
 use MIME::Base64;
 use URI;
 
-my %methods = map { $_ => 1 } qw( firehose gardenhose spritzer birddog shadow follow track );
+my %methods = map { $_ => 1 } qw( firehose sample filter );
 
 sub new {
     my $class = shift;
@@ -30,7 +30,7 @@ sub new {
 
     my $auth = MIME::Base64::encode("$username:$password");
 
-    my $uri = URI->new("http://stream.twitter.com/$method.json");
+    my $uri = URI->new("http://stream.twitter.com/1/statuses/$method.json");
     $uri->query_form(%args);
 
     my $self = bless {}, $class;
@@ -47,11 +47,11 @@ sub new {
         want_body_handle => 1, # for some reason on_body => sub {} doesn't work :/
         sub {
             my ($handle, $headers) = @_;
-            $self->{_handle} = $handle;
+            Scalar::Util::weaken($self);
 
             if ($handle) {
                 $handle->on_eof(sub {
-                    undef $_[0];
+                    undef $handle;
                     $on_eof->(@_);
                 });
                 my $reader; $reader = sub {
@@ -64,10 +64,9 @@ sub new {
                     $handle->push_read(line => $reader);
                 };
                 $handle->push_read(line => $reader);
-                $self->{guard} = AnyEvent::Util::guard { undef $reader };
+                $self->{guard} = AnyEvent::Util::guard { $on_eof->(); $handle->destroy; undef $reader  };
             }
         };
-    Scalar::Util::weaken($self);
 
     return $self;
 }
