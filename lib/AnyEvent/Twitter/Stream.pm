@@ -2,7 +2,7 @@ package AnyEvent::Twitter::Stream;
 
 use strict;
 use 5.008_001;
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 use AnyEvent;
 use AnyEvent::HTTP;
@@ -35,7 +35,7 @@ sub new {
 
     my $self = bless {}, $class;
 
-    http_get $uri,
+    $self->{connection_guard} = http_get $uri,
         headers => { Authorization => "Basic $auth" },
         on_header => sub {
             my($headers) = @_;
@@ -47,7 +47,6 @@ sub new {
         want_body_handle => 1, # for some reason on_body => sub {} doesn't work :/
         sub {
             my ($handle, $headers) = @_;
-            Scalar::Util::weaken($self);
             $self->{_handle} = $handle;
 
             if ($handle) {
@@ -57,7 +56,7 @@ sub new {
                 });
                 my $reader; $reader = sub {
                     my($handle, $json) = @_;
-                    # Twitter strem return "\x0a\x0d\x0a" if there's no matched tweets in ~30s.
+                    # Twitter stream returns "\x0a\x0d\x0a" if there's no matched tweets in ~30s.
                     if ($json) {
                         my $tweet = JSON::decode_json($json);
                         $on_tweet->($tweet);
@@ -68,6 +67,7 @@ sub new {
                 $self->{guard} = AnyEvent::Util::guard { undef $reader };
             }
         };
+    Scalar::Util::weaken($self);
 
     return $self;
 }
