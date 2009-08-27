@@ -2,7 +2,7 @@ package AnyEvent::Twitter::Stream;
 
 use strict;
 use 5.008_001;
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 
 use AnyEvent;
 use AnyEvent::HTTP;
@@ -10,8 +10,15 @@ use AnyEvent::Util;
 use JSON;
 use MIME::Base64;
 use URI;
+use List::Util qw(first);
+use URI::Escape;
+use Carp;
 
-my %methods = map { $_ => 1 } qw( firehose sample filter );
+my %methods = (
+    firehose => [],
+    sample   => [],
+    filter   => [ qw(track follow) ]
+);
 
 sub new {
     my $class = shift;
@@ -28,15 +35,35 @@ sub new {
         return $on_error->("Method $method not available.");
     }
 
-    my $auth = MIME::Base64::encode("$username:$password");
+    my($param_name, $param_value);
+    for my $param ( @{$methods{$method}}) {
+        if (defined $args{$param}) {
+            $param_name = $param;
+            $param_value = delete $args{$param};
+            last;
+        }
+    }
+
+    my $auth = MIME::Base64::encode("$username:$password", '');
 
     my $uri = URI->new("http://stream.twitter.com/1/statuses/$method.json");
     $uri->query_form(%args);
 
     my $self = bless {}, $class;
 
-    $self->{connection_guard} = http_get $uri,
-        headers => { Authorization => "Basic $auth" },
+    my @initial_args = ($uri);
+    my $sender = \&http_get;
+    if ($method eq 'filter') {
+        $sender = \&http_post;
+        push @initial_args, "$param_name=" . URI::Escape::uri_escape($param_value);
+    }
+
+    $self->{connection_guard} = $sender->(@initial_args,
+        headers => {
+            Authorization => "Basic $auth",
+            'Content-Type' =>  'application/x-www-form-urlencoded',
+            Accept => '*/*'
+        },
         on_header => sub {
             my($headers) = @_;
             if ($headers->{Status} ne '200') {
@@ -66,7 +93,7 @@ sub new {
                 $handle->push_read(line => $reader);
                 $self->{guard} = AnyEvent::Util::guard { $on_eof->(); $handle->destroy; undef $reader  };
             }
-        };
+        });
 
     return $self;
 }
