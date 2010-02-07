@@ -2,7 +2,7 @@ package AnyEvent::Twitter::Stream;
 
 use strict;
 use 5.008_001;
-our $VERSION = '0.09';
+our $VERSION = '0.10';
 
 use AnyEvent;
 use AnyEvent::HTTP;
@@ -12,6 +12,8 @@ use MIME::Base64;
 use URI;
 use URI::Escape;
 use Carp;
+
+our $STREAMING_SERVER = 'stream.twitter.com';
 
 my %methods = (
     firehose => [],
@@ -32,10 +34,6 @@ sub new {
     my $on_keepalive = delete $args{on_keepalive} || sub {};
     my $timeout  = delete $args{timeout};
 
-    my $set_timeout = $timeout
-        ? sub { AnyEvent->timer(after => $timeout, cb => sub { $on_error->('timeout') }) }
-        : sub {};
-
     unless ($methods{$method}) {
         return $on_error->("Method $method not available.");
     }
@@ -51,63 +49,76 @@ sub new {
 
     my $auth = MIME::Base64::encode("$username:$password", '');
 
-    my $uri = URI->new("http://stream.twitter.com/1/statuses/$method.json");
+    my $uri = URI->new("http://$STREAMING_SERVER/1/statuses/$method.json");
     $uri->query_form(%args);
+
+    my $request_method = 'GET';
+    my $request_body;
+    if ($method eq 'filter') {
+        $request_method = 'POST';
+        $request_body = "$param_name=" . URI::Escape::uri_escape($param_value);
+    }
 
     my $self = bless {}, $class;
 
-    my @initial_args = ($uri);
-    my $sender = \&http_get;
-    if ($method eq 'filter') {
-        $sender = \&http_post;
-        push @initial_args, "$param_name=" . URI::Escape::uri_escape($param_value);
-    }
+    {
+        Scalar::Util::weaken(my $self = $self);
 
-    $self->{timeout} = $set_timeout->();
-    $self->{connection_guard} = $sender->(@initial_args,
-        headers => {
-            Authorization => "Basic $auth",
-            'Content-Type' =>  'application/x-www-form-urlencoded',
-            Accept => '*/*'
-        },
-        on_header => sub {
-            my($headers) = @_;
-            if ($headers->{Status} ne '200') {
-                return $on_error->("$headers->{Status}: $headers->{Reason}");
-            }
-            return 1;
-        },
-        want_body_handle => 1, # for some reason on_body => sub {} doesn't work :/
-        sub {
-            my ($handle, $headers) = @_;
-            Scalar::Util::weaken($self);
+        my $set_timeout = $timeout
+            ? sub { $self->{timeout} = AE::timer($timeout, 0, sub { $on_error->('timeout') }) }
+            : sub {};
 
-            if ($handle) {
-                $handle->on_error(sub {
-                    undef $handle;
-                    $on_error->(@_);
-                });
-                $handle->on_eof(sub {
-                    undef $handle;
-                    $on_eof->(@_);
-                });
-                my $reader; $reader = sub {
-                    my($handle, $json) = @_;
-                    # Twitter stream returns "\x0a\x0d\x0a" if there's no matched tweets in ~30s.
-                    $self->{timeout} = $set_timeout->();
-                    if ($json) {
-                        my $tweet = JSON::decode_json($json);
-                        $on_tweet->($tweet);
-                    }
-                    else {
-                        $on_keepalive->();
-                    }
+        $set_timeout->();
+
+        $self->{connection_guard} = http_request($request_method, $uri,
+            headers => {
+                Accept => '*/*',
+                Authorization => "Basic $auth",
+                ($request_method eq 'POST'
+                    ? ('Content-Type' => 'application/x-www-form-urlencoded')
+                    : ()
+                ),
+            },
+            body => $request_body,
+            on_header => sub {
+                my($headers) = @_;
+                if ($headers->{Status} ne '200') {
+                    return $on_error->("$headers->{Status}: $headers->{Reason}");
+                }
+                return 1;
+            },
+            want_body_handle => 1, # for some reason on_body => sub {} doesn't work :/
+            sub {
+                my ($handle, $headers) = @_;
+
+                if ($handle) {
+                    $handle->on_error(sub {
+                        undef $handle;
+                        $on_error->(@_);
+                    });
+                    $handle->on_eof(sub {
+                        undef $handle;
+                        $on_eof->(@_);
+                    });
+                    my $reader; $reader = sub {
+                        my($handle, $json) = @_;
+                        # Twitter stream returns "\x0a\x0d\x0a" if there's no matched tweets in ~30s.
+                        $set_timeout->();
+                        if ($json) {
+                            my $tweet = JSON::decode_json($json);
+                            $on_tweet->($tweet);
+                        }
+                        else {
+                            $on_keepalive->();
+                        }
+                        $handle->push_read(line => $reader);
+                    };
                     $handle->push_read(line => $reader);
-                };
-                $handle->push_read(line => $reader);
-                $self->{guard} = AnyEvent::Util::guard { $on_eof->(); $handle->destroy; undef $reader  };
+                    $self->{guard} = AnyEvent::Util::guard { $on_eof->(); $handle->destroy; undef $reader };
+                }
             }
-        });
+        );
+    }
 
     return $self;
 }
