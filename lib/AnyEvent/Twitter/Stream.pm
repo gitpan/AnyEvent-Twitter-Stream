@@ -2,7 +2,7 @@ package AnyEvent::Twitter::Stream;
 
 use strict;
 use 5.008_001;
-our $VERSION = '0.11';
+our $VERSION = '0.12';
 
 use AnyEvent;
 use AnyEvent::HTTP;
@@ -16,8 +16,10 @@ our $STREAMING_SERVER = 'stream.twitter.com';
 
 my %methods = (
     firehose => [],
+    links    => [],
+    retweet  => [],
     sample   => [],
-    filter   => [ qw(track follow) ]
+    filter   => [ qw(track follow locations) ],
 );
 
 sub new {
@@ -43,12 +45,10 @@ sub new {
         return $on_error->("Method $method not available.");
     }
 
-    my($param_name, $param_value);
+    my %post_args;
     for my $param ( @{$methods{$method}}) {
-        if (defined $args{$param}) {
-            $param_name = $param;
-            $param_value = delete $args{$param};
-            last;
+        if (exists $args{$param}) {
+            $post_args{$param} = delete $args{$param};
         }
     }
 
@@ -61,7 +61,7 @@ sub new {
     my $request_body;
     if ($method eq 'filter') {
         $request_method = 'POST';
-        $request_body = "$param_name=" . URI::Escape::uri_escape($param_value);
+        $request_body = join '&', map "$_=" . URI::Escape::uri_escape($post_args{$_}), keys %post_args;
     }
 
     my $self = bless {}, $class;
