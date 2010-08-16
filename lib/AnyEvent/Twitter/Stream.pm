@@ -2,7 +2,7 @@ package AnyEvent::Twitter::Stream;
 
 use strict;
 use 5.008_001;
-our $VERSION = '0.13';
+our $VERSION = '0.14';
 
 use AnyEvent;
 use AnyEvent::HTTP;
@@ -26,14 +26,19 @@ sub new {
     my $class = shift;
     my %args  = @_;
 
-    my $username = delete $args{username};
-    my $password = delete $args{password};
-    my $method   = delete $args{method};
-    my $on_tweet = delete $args{on_tweet};
-    my $on_error = delete $args{on_error} || sub { die @_ };
-    my $on_eof   = delete $args{on_eof}   || sub {};
-    my $on_keepalive = delete $args{on_keepalive} || sub {};
-    my $timeout  = delete $args{timeout};
+    my $username        = delete $args{username};
+    my $password        = delete $args{password};
+    my $consumer_key    = delete $args{consumer_key};
+    my $consumer_secret = delete $args{consumer_secret};
+    my $token           = delete $args{token};
+    my $token_secret    = delete $args{token_secret};
+    my $method          = delete $args{method};
+    my $on_tweet        = delete $args{on_tweet};
+    my $on_error        = delete $args{on_error} || sub { die @_ };
+    my $on_eof          = delete $args{on_eof} || sub { };
+    my $on_keepalive    = delete $args{on_keepalive} || sub { };
+    my $on_delete       = delete $args{on_delete};
+    my $timeout         = delete $args{timeout};
 
     my $decode_json;
     unless (delete $args{no_decode_json}) {
@@ -42,7 +47,8 @@ sub new {
     }
 
     unless ($methods{$method}) {
-        return $on_error->("Method $method not available.");
+        $on_error->("Method $method not available.");
+        return;
     }
 
     my %post_args;
@@ -52,8 +58,6 @@ sub new {
         }
     }
 
-    my $auth = MIME::Base64::encode("$username:$password", '');
-
     my $uri = URI->new("http://$STREAMING_SERVER/1/statuses/$method.json");
     $uri->query_form(%args);
 
@@ -62,6 +66,30 @@ sub new {
     if ($method eq 'filter') {
         $request_method = 'POST';
         $request_body = join '&', map "$_=" . URI::Escape::uri_escape($post_args{$_}), keys %post_args;
+    }
+
+    my $auth;
+    if ($consumer_key) {
+        eval {require Net::OAuth;};
+        die $@ if $@;
+
+        my $request = Net::OAuth->request('protected resource')->new(
+            version          => '1.0',
+            consumer_key     => $consumer_key,
+            consumer_secret  => $consumer_secret,
+            token            => $token,
+            token_secret     => $token_secret,
+            request_method   => $request_method,
+            signature_method => 'HMAC-SHA1',
+            timestamp        => time,
+            nonce            => MIME::Base64::encode( time . $$ . rand ),
+            request_url      => $uri,
+            extra_params     => \%post_args,
+        );
+        $request->sign;
+        $auth = $request->to_authorization_header;
+    }else{
+        $auth = "Basic ".MIME::Base64::encode("$username:$password", '');
     }
 
     my $self = bless {}, $class;
@@ -78,7 +106,7 @@ sub new {
         $self->{connection_guard} = http_request($request_method, $uri,
             headers => {
                 Accept => '*/*',
-                Authorization => "Basic $auth",
+                Authorization => $auth,
                 ($request_method eq 'POST'
                     ? ('Content-Type' => 'application/x-www-form-urlencoded')
                     : ()
@@ -88,7 +116,8 @@ sub new {
             on_header => sub {
                 my($headers) = @_;
                 if ($headers->{Status} ne '200') {
-                    return $on_error->("$headers->{Status}: $headers->{Reason}");
+                    $on_error->("$headers->{Status}: $headers->{Reason}");
+                    return;
                 }
                 return 1;
             },
@@ -111,7 +140,11 @@ sub new {
                         $set_timeout->();
                         if ($json) {
                             my $tweet = $decode_json ? JSON::decode_json($json) : $json;
-                            $on_tweet->($tweet);
+                            if ($on_delete && $tweet->{delete} && $tweet->{delete}->{status}) {
+                                $on_delete->($tweet->{delete}->{status}->{id}, $tweet->{delete}->{status}->{user_id});
+                            }else{
+                                $on_tweet->($tweet);
+                            }
                         }
                         else {
                             $on_keepalive->();
@@ -137,7 +170,7 @@ __END__
 API AnyEvent
 
 =for test_synopsis
-my($user, $password, @following_ids);
+my($user, $password, @following_ids, $consumer_key, $consumer_secret, $token, $token_secret);
 
 =head1 NAME
 
@@ -160,6 +193,10 @@ AnyEvent::Twitter::Stream - Receive Twitter streaming API in an event loop
       on_keepalive => sub {
           warn "ping\n";
       },
+      on_delete => sub {
+          my ($tweet_id, $user_id) = @_; # callback executed when twitter send a delete notification
+          ...
+      },
       timeout => 45,
   );
 
@@ -170,6 +207,17 @@ AnyEvent::Twitter::Stream - Receive Twitter streaming API in an event loop
       method   => "filter",
       track    => "Perl,Test,Music",
       on_tweet => sub { },
+  );
+
+  # to use OAuth authentication
+  my $listener = AnyEvent::Twitter::Stream->new(
+      consumer_key    => $consumer_key,
+      consumer_secret => $consumer_secret,
+      token           => $token,
+      token_secret    => $token_secret,
+      method          => "filter",
+      track           => "...",
+      on_tweet        => sub { ... },
   );
 
 =head1 DESCRIPTION
