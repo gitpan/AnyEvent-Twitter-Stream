@@ -2,7 +2,7 @@ package AnyEvent::Twitter::Stream;
 
 use strict;
 use 5.008_001;
-our $VERSION = '0.16';
+our $VERSION = '0.17';
 
 use AnyEvent;
 use AnyEvent::HTTP;
@@ -168,7 +168,7 @@ sub new {
                         $handle->push_read(line => $reader);
                     };
                     $handle->push_read(line => $reader);
-                    $self->{guard} = AnyEvent::Util::guard { $on_eof->(); $handle->destroy if $handle; undef $reader };
+                    $self->{guard} = AnyEvent::Util::guard { $handle->destroy if $handle; undef $reader };
                 }
             }
         );
