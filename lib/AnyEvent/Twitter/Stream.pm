@@ -2,7 +2,7 @@ package AnyEvent::Twitter::Stream;
 
 use strict;
 use 5.008_001;
-our $VERSION = '0.18';
+our $VERSION = '0.19';
 
 use AnyEvent;
 use AnyEvent::HTTP;
@@ -138,9 +138,9 @@ sub new {
             sub {
                 my ($handle, $headers) = @_;
 
-                $on_connect->();
-
                 if ($handle) {
+                    $on_connect->();
+
                     $handle->on_error(sub {
                         undef $handle;
                         $on_error->($_[2]);
