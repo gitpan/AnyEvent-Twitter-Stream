@@ -2,7 +2,7 @@ package AnyEvent::Twitter::Stream;
 
 use strict;
 use 5.008_001;
-our $VERSION = '0.19';
+our $VERSION = '0.20';
 
 use AnyEvent;
 use AnyEvent::HTTP;
@@ -13,8 +13,9 @@ use URI::Escape;
 use Carp;
 
 our $STREAMING_SERVER  = 'stream.twitter.com';
-our $USERSTREAM_SERVER = 'chirpstream.twitter.com';
+our $USERSTREAM_SERVER = 'userstream.twitter.com';
 our $PROTOCOL          = $ENV{'ANYEVENT_TWITTER_STREAM_SSL'} ? 'https' : 'http';
+our $US_PROTOCOL       = 'https'; # for testing
 
 my %methods = (
     firehose   => [],
@@ -67,7 +68,7 @@ sub new {
 
     my $uri;
     if ($method eq 'userstream') {
-        $uri = URI->new("$PROTOCOL://$USERSTREAM_SERVER/2b/user.json");
+        $uri = URI->new("$US_PROTOCOL://$USERSTREAM_SERVER/2/user.json");
     }else{
         $uri = URI->new("$PROTOCOL://$STREAMING_SERVER/1/statuses/$method.json");
     }
