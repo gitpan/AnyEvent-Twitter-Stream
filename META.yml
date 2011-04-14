@@ -20,7 +20,7 @@ no_index:
     - xt
 requires:
   AnyEvent: 0
-  AnyEvent::HTTP: 0
+  AnyEvent::HTTP: 2.0
   Filter::Util::Call: 0
   JSON: 2.0
   URI: 0
@@ -28,4 +28,4 @@ requires:
 resources:
   license: http://dev.perl.org/licenses/
   repository: git://github.com/miyagawa/AnyEvent-Twitter-Stream.git
-version: 0.20
+version: 0.20_1
