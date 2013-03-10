@@ -2,7 +2,7 @@ package AnyEvent::Twitter::Stream;
 
 use strict;
 use 5.008_001;
-our $VERSION = '0.22';
+our $VERSION = '0.23';
 
 use AnyEvent;
 use AnyEvent::HTTP;
@@ -11,19 +11,24 @@ use MIME::Base64;
 use URI;
 use URI::Escape;
 use Carp;
+use Compress::Raw::Zlib;
 
 our $STREAMING_SERVER  = 'stream.twitter.com';
 our $USERSTREAM_SERVER = 'userstream.twitter.com';
+our $SITESTREAM_SERVER = 'sitestream.twitter.com';
 our $PROTOCOL          = 'https';
 our $US_PROTOCOL       = 'https'; # for testing
 
 my %methods = (
-    firehose   => [],
-    links      => [],
-    retweet    => [],
-    sample     => [],
-    userstream => [ qw(replies) ],
-    filter     => [ qw(track follow locations) ],
+    filter     => [ POST => sub { "$PROTOCOL://$STREAMING_SERVER/1.1/statuses/filter.json"   } ],
+    sample     => [ GET  => sub { "$PROTOCOL://$STREAMING_SERVER/1.1/statuses/sample.json"   } ],
+    firehose   => [ GET  => sub { "$PROTOCOL://$STREAMING_SERVER/1.1/statuses/firehose.json" } ],
+    userstream => [ GET  => sub { "$US_PROTOCOL://$USERSTREAM_SERVER/1.1/user.json"          } ],
+    sitestream => [ GET  => sub { "$PROTOCOL://$SITESTREAM_SERVER/1.1/site.json"             } ],
+
+    # DEPRECATED
+    links      => [ GET  => sub { "$PROTOCOL://$STREAMING_SERVER/1/statuses/links.json"   } ],
+    retweet    => [ GET  => sub { "$PROTOCOL://$STREAMING_SERVER/1/statuses/retweet.json" } ],
 );
 
 sub new {
@@ -44,6 +49,7 @@ sub new {
     my $on_keepalive    = delete $args{on_keepalive} || sub { };
     my $on_delete       = delete $args{on_delete};
     my $on_friends      = delete $args{on_friends};
+    my $on_direct_message = delete $args{on_direct_message};
     my $on_event        = delete $args{on_event};
     my $timeout         = delete $args{timeout};
 
@@ -53,33 +59,29 @@ sub new {
         $decode_json = 1;
     }
 
-    unless ($methods{$method}) {
+    my ($zlib, my $_zstatus);
+    if (delete $args{use_compression}){
+        ($zlib, $_zstatus)  = Compress::Raw::Zlib::Inflate->new(
+            -LimitOutput => 1,
+            -AppendOutput => 1,
+            -WindowBits => WANT_GZIP_OR_ZLIB,
+        );
+        die "Can't make inflator: $_zstatus" unless $zlib;
+    }
+
+    unless ($methods{$method} || exists $args{api_url} ) {
         $on_error->("Method $method not available.");
         return;
     }
 
-    my %post_args;
-    for my $param ( @{ $methods{$method} } ) {
-        next if $method eq 'userstream' && $param eq 'replies';
-        if ( exists $args{$param} ) {
-            $post_args{$param} = delete $args{$param};
-        }
-    }
+    my $uri = URI->new(delete $args{api_url} || $methods{$method}[1]());
 
-    my $uri;
-    if ($method eq 'userstream') {
-        $uri = URI->new("$US_PROTOCOL://$USERSTREAM_SERVER/2/user.json");
-    }else{
-        $uri = URI->new("$PROTOCOL://$STREAMING_SERVER/1/statuses/$method.json");
-    }
-
-    $uri->query_form(%args);
-
-    my $request_method = 'GET';
     my $request_body;
-    if ($method eq 'filter' || $method eq 'userstream') {
-        $request_method = 'POST';
-        $request_body = join '&', map "$_=" . URI::Escape::uri_escape($post_args{$_}), keys %post_args;
+    my $request_method = delete $args{request_method} || $methods{$method}[0] || 'GET';
+    if ( $request_method eq 'POST' ) {
+        $request_body = join '&', map "$_=" . URI::Escape::uri_escape($args{$_}), keys %args;
+    }else{
+        $uri->query_form(%args);
     }
 
     my $auth;
@@ -98,7 +100,7 @@ sub new {
             timestamp        => time,
             nonce            => MIME::Base64::encode( time . $$ . rand ),
             request_url      => $uri,
-            extra_params     => \%post_args,
+            $request_method eq 'POST' ? (extra_params => \%args) : (),
         );
         $request->sign;
         $auth = $request->to_authorization_header;
@@ -126,6 +128,8 @@ sub new {
                     $on_delete->($tweet->{delete}->{status}->{id}, $tweet->{delete}->{status}->{user_id});
                 }elsif($on_friends && $tweet->{friends}) {
                     $on_friends->($tweet->{friends});
+                }elsif($on_direct_message && $tweet->{direct_message}) {
+                    $on_direct_message->($tweet->{direct_message});
                 }elsif($on_event && $tweet->{event}) {
                     $on_event->($tweet);
                 }else{
@@ -142,6 +146,7 @@ sub new {
         $self->{connection_guard} = http_request($request_method, $uri,
             headers => {
                 Accept => '*/*',
+                ( defined $zlib ? ('Accept-Encoding' => 'deflate, gzip') : ()),
                 Authorization => $auth,
                 ($request_method eq 'POST'
                     ? ('Content-Type' => 'application/x-www-form-urlencoded')
@@ -162,7 +167,7 @@ sub new {
                 my ($handle, $headers) = @_;
 
                 return unless $handle;
-
+                my $input;
                 my $chunk_reader = sub {
                     my ($handle, $line) = @_;
 
@@ -171,13 +176,22 @@ sub new {
 
                     $handle->push_read(chunk => $len, sub {
                         my ($handle, $chunk) = @_;
+                        $handle->push_read(line => sub { length $_[1] and die 'bad chunk (missing last empty line)'; });
 
-                        $handle->push_read(line => sub {
-                            length $_[1] and die 'bad chunk (missing last empty line)';
-                        });
-
-                        $on_json_message->($chunk);
-                    });
+                        unless ($headers->{'content-encoding'}) { 
+                                $on_json_message->($chunk); 
+                        } elsif ($headers->{'content-encoding'} =~ 'deflate|gzip') { 
+                               $input .= $chunk;
+                               my ($message);
+                               do { 
+                                   $_zstatus = $zlib->inflate(\$input, \$message);
+                                   return unless $_zstatus == Z_OK || $_zstatus == Z_BUF_ERROR;
+                               } while ( $_zstatus == Z_OK && length $input );
+                               $on_json_message->($message);
+                        } else {
+                                die "Don't know how to decode $headers->{'content-encoding'}"
+                        }
+                     });
                 };
                 my $line_reader = sub {
                     my ($handle, $line) = @_;
@@ -311,10 +325,6 @@ The name of the method you want to use on the stream. Currently, anyone of :
 
 =item B<firehose>
 
-=item B<links>
-
-=item B<retweet>
-
 =item B<sample>
 
 =item B<userstream>
@@ -326,6 +336,14 @@ To use this method, you need to use the OAuth mechanism.
 With this method you can specify what you want to filter amongst B<track>, B<follow> and B<locations>.
 
 =back
+
+=item B<api_url>
+
+Pass this to override the default URL for the API endpoint.
+
+=item B<request_method>
+
+Pass this to override the default HTTP request method.
 
 =item B<timeout>
 
@@ -353,9 +371,17 @@ Callback to execute when the stream send a delete notification.
 
 B<Only with the usertream method>. Callback to execute when the stream send a list of friends.
 
+=item B<on_direct_message>
+
+B<Only with the usertream method>. Callback to execute when a direct message is received in the stream.
+
 =item B<on_event>
 
 B<Only with the userstream method>. Callback to execute when the stream send an event notification (follow, ...).
+
+=item B<additional agruments>
+
+Any additional arguments are assumed to be parameters to the underlying API method and are passed to Twitter.
 
 =back
 
