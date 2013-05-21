@@ -2,7 +2,7 @@ package AnyEvent::Twitter::Stream;
 
 use strict;
 use 5.008_001;
-our $VERSION = '0.24';
+our $VERSION = '0.25';
 
 use AnyEvent;
 use AnyEvent::HTTP;
@@ -79,7 +79,7 @@ sub new {
     my $request_body;
     my $request_method = delete $args{request_method} || $methods{$method}[0] || 'GET';
     if ( $request_method eq 'POST' ) {
-        $request_body = join '&', map "$_=" . URI::Escape::uri_escape($args{$_}), keys %args;
+        $request_body = join '&', map "$_=" . URI::Escape::uri_escape_utf8($args{$_}), keys %args;
     }else{
         $uri->query_form(%args);
     }
