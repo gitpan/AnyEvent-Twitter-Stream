@@ -3,14 +3,13 @@ abstract: 'Receive Twitter streaming API in an event loop'
 author:
   - 'Tatsuhiko Miyagawa <miyagawa@bulknews.net>'
 build_requires:
-  ExtUtils::MakeMaker: 6.59
   Test::More: 0
   Test::Requires: 0
   Test::TCP: 0
 configure_requires:
-  Module::Build::Tiny: 0.020
+  Module::Build::Tiny: 0.023
 dynamic_config: 0
-generated_by: 'Dist::Milla version v1.0.2, Dist::Zilla version 4.300034, CPAN::Meta::Converter version 2.130880'
+generated_by: 'Dist::Milla version v1.0.2, Dist::Zilla version 4.300034, CPAN::Meta::Converter version 2.131560'
 license: perl
 meta-spec:
   url: http://module-build.sourceforge.net/META-spec-v1.4.html
@@ -34,7 +33,7 @@ resources:
   bugtracker: https://github.com/miyagawa/AnyEvent-Twitter-Stream/issues
   homepage: https://github.com/miyagawa/AnyEvent-Twitter-Stream
   repository: https://github.com/miyagawa/AnyEvent-Twitter-Stream.git
-version: 0.25
+version: 0.26
 x_contributors:
   - 'Chris Prather <chris@prather.org>'
   - 'Daisuke Murase <typester@cpan.org>'
