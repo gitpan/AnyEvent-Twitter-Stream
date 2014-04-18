@@ -2,7 +2,7 @@ package AnyEvent::Twitter::Stream;
 
 use strict;
 use 5.008_001;
-our $VERSION = '0.26';
+our $VERSION = '0.27';
 
 use AnyEvent;
 use AnyEvent::HTTP;
@@ -168,31 +168,38 @@ sub new {
 
                 return unless $handle;
                 my $input;
-                my $chunk_reader = sub {
+                my $chunk_reader;
+                $chunk_reader = sub {
                     my ($handle, $line) = @_;
 
                     $line =~ /^([0-9a-fA-F]+)/ or die 'bad chunk (incorrect length)';
                     my $len = hex $1;
-
-                    $handle->push_read(chunk => $len, sub {
-                        my ($handle, $chunk) = @_;
-                        $handle->push_read(line => sub { length $_[1] and die 'bad chunk (missing last empty line)'; });
-
+                    my $chunk_part_reader;
+                    $chunk_part_reader = sub {
+                        my ($handle, $chunk_raw) = @_;
+                        my $chunk = $chunk_raw;
+                        $chunk =~ s/\r\n$//;
+                        $input .= $chunk;
                         unless ($headers->{'content-encoding'}) { 
-                                $on_json_message->($chunk); 
+                            while ($input =~ s/^(.*?)\r\n//) {
+                                my ($json_raw) = $1;
+                                $on_json_message->($json_raw);
+                            }
                         } elsif ($headers->{'content-encoding'} =~ 'deflate|gzip') { 
-                               $input .= $chunk;
                                my ($message);
                                do { 
-                                   $_zstatus = $zlib->inflate(\$input, \$message);
-                                   return unless $_zstatus == Z_OK || $_zstatus == Z_BUF_ERROR;
+                               $_zstatus = $zlib->inflate(\$input, \$message);
+                               return unless $_zstatus == Z_OK || $_zstatus == Z_BUF_ERROR;
                                } while ( $_zstatus == Z_OK && length $input );
                                $on_json_message->($message);
                         } else {
-                                die "Don't know how to decode $headers->{'content-encoding'}"
+                            die "Don't know how to decode $headers->{'content-encoding'}"
                         }
-                     });
+                        $handle->push_read(line => $chunk_reader);
+                    }; # chunk_part_reader
+                    $handle->push_read(chunk => $len + 2, $chunk_part_reader);
                 };
+
                 my $line_reader = sub {
                     my ($handle, $line) = @_;
 
@@ -256,7 +263,7 @@ AnyEvent::Twitter::Stream - Receive Twitter streaming API in an event loop
       username => $user,
       password => $password,
       method   => "filter",  # "firehose" for everything, "sample" for sample timeline
-      follow   => join(",", @following_ids),
+      follow   => join(",", @following_ids), # numeric IDs
       on_tweet => sub {
           my $tweet = shift;
           warn "$tweet->{user}{screen_name}: $tweet->{text}\n";
@@ -334,6 +341,8 @@ To use this method, you need to use the OAuth mechanism.
 =item B<filter>
 
 With this method you can specify what you want to filter amongst B<track>, B<follow> and B<locations>.
+
+See L<https://dev.twitter.com/docs/api/1.1/post/statuses/filter> for the details of the parameters.
 
 =back
 

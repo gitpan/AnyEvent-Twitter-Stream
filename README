@@ -10,7 +10,7 @@ SYNOPSIS
           username => $user,
           password => $password,
           method   => "filter",  # "firehose" for everything, "sample" for sample timeline
-          follow   => join(",", @following_ids),
+          follow   => join(",", @following_ids), # numeric IDs
           on_tweet => sub {
               my $tweet = shift;
               warn "$tweet->{user}{screen_name}: $tweet->{text}\n";
@@ -77,6 +77,9 @@ METHODS
         filter
           With this method you can specify what you want to filter amongst
           track, follow and locations.
+
+          See <https://dev.twitter.com/docs/api/1.1/post/statuses/filter>
+          for the details of the parameters.
 
     api_url
         Pass this to override the default URL for the API endpoint.
